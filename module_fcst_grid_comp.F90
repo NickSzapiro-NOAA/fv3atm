@@ -106,6 +106,8 @@ if (rc /= ESMF_SUCCESS) write(0,*) 'rc=',rc,__FILE__,__LINE__; if(ESMF_LogFoundE
   integer :: numTracers    = 0
 
   integer :: frestart(999)
+  logical :: write_restartfh = .false.
+  integer, allocatable :: restart_fh(:)
 
   integer :: mype
 !
@@ -591,6 +593,8 @@ if (rc /= ESMF_SUCCESS) write(0,*) 'rc=',rc,__FILE__,__LINE__; if(ESMF_LogFoundE
 
     integer                       :: num_restart_interval, restart_starttime
     real,dimension(:),allocatable :: restart_interval
+    character(CL)                 :: cvalue          ! attribute string
+    integer                       :: n, nfh
 
     integer           :: urc
     type(ESMF_State)  :: tempState
@@ -805,6 +809,29 @@ if (rc /= ESMF_SUCCESS) write(0,*) 'rc=',rc,__FILE__,__LINE__; if(ESMF_LogFoundE
     endif
 ! if to write out restart at the end of forecast
     if (mype == 0) print *,'frestart=',frestart(1:10)/3600, 'total_inttime=',total_inttime
+
+    ! Set up times to write non-interval restarts
+    call NUOPC_CompAttributeGet(fcst_comp, name='restart_fh', isPresent=isPresent, isSet=isSet, rc=rc)
+    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, line=__LINE__, file=__FILE__)) return
+    if (isPresent .and. isSet) then
+      call NUOPC_CompAttributeGet(gcomp, name='restart_fh', value=cvalue, rc=rc)
+      if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, line=__LINE__, file=__FILE__)) return
+
+      ! convert string to a list of integer restart_fh values
+      nfh = 1 + count(transfer(trim(cvalue), 'a', len(cvalue)) == ",")
+      allocate(restart_fh(1:nfh)) !not deallocated
+      read(cvalue,*)restart_fh(1:nfh) !integer forecast hours
+
+      ! create a list of times at each restart_fh
+      if(iau_offset > 0 ) then
+        restart_starttime = iau_offset *3600
+      else
+        restart_starttime = 0
+      endif
+      do n = 1,nfh
+        restart_fh(n) = restart_fh(n)*3600 + restart_starttime
+      end do
+    end if
 
 !------ initialize component models ------
 
@@ -1387,7 +1414,11 @@ if (rc /= ESMF_SUCCESS) write(0,*) 'rc=',rc,__FILE__,__LINE__; if(ESMF_LogFoundE
 
       !--- intermediate restart
       call get_time(Atmos%Time - Atmos%Time_init, seconds)
-      if (ANY(frestart(:) == seconds)) then
+      if (allocated(restart_fh)) then
+        write_restartfh = .false.
+        if (ANY(restart_fh(:) == seconds) ) write_restartfh = .true. 
+      end if
+      if ( (ANY(frestart(:) == seconds) .OR. write_restartfh ) then
           if (mype == 0) write(*,*)'write out restart at n_atmsteps=',n_atmsteps,' seconds=',seconds,  &
                                    'integration length=',n_atmsteps*dt_atmos/3600.
 
